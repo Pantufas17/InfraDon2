@@ -244,5 +244,7 @@ onMounted(() => {
       <button @click="deleteDoc(post)">Supprimer</button>
     </li>
   </ul>
-  <button @click="createDoc({ nom: 'Nuno', age: 22, ville: 'Lausanne' })">Créer</button>
+  <button @click="createDoc({ nom: 'Nuno', age: 22, ville: 'Lausanne', sport: 'foot' })">
+    Créer
+  </button>
 </template>
