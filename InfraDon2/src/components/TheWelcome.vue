@@ -144,6 +144,7 @@ declare interface Post {
   nom: string
   age: number
   ville: string
+  sport: string
   _id?: string
   _rev?: string
 }
