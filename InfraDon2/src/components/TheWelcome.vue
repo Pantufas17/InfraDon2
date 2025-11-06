@@ -22,16 +22,23 @@ const postsData = ref<Post[]>([])
 
 const initDatabase = () => {
   console.log('=> Connexion à la base de données')
-  const db = new PouchDB('http://nuno:Nunofaria17@localhost:5984/infradonn2_chat')
-  if (db) {
-    console.log('Connecté à la collection : ' + db?.name)
-    storage.value = db
-  } else {
-    console.warn('Echec lors de la connexion à la base de données')
-  }
+  
+  const localDB = new PouchDB('Posts')
+  storage.value = localDB
+  console.log('Base locale :', localDB?.name)
+
+  localDB.replicate.from('http://nuno:Nunofaria17@localhost:5984/infradonn2_chat', {
+    live: true, 
+    retry: true, 
+  }).then(() => {
+    console.log('Réplication terminée')
+    fetchData()  
+  }).catch((err) => {
+    console.log('Erreur, on peut pas faire réplication :(', err)
+  })
 }
 
-// recuperer des données
+
 const fetchData = () => {
   storage.value
     .allDocs({
@@ -41,12 +48,12 @@ const fetchData = () => {
     .then((result: any) => {
       postsData.value = result.rows.map((row: any) => row.doc)
       console.log(postsData.value)
-      // handle result
     })
-    .catch(function (err: any) {
-      console.log(err)
+    .catch((err: any) => {
+      console.log('Erreur pour recuperer des donnes', err)
     })
 }
+
 
 const createDoc = (newDoc: any) => {
   storage.value
@@ -55,10 +62,11 @@ const createDoc = (newDoc: any) => {
       console.log(response)
       fetchData()
     })
-    .catch(function (err: any) {
-      console.log(err)
+    .catch((err: any) => {
+      console.log('Erreur quand on créer des docs :(', err)
     })
 }
+
 
 const updateDoc = (doc: any) => {
   const newDoc = { ...doc }
@@ -69,8 +77,8 @@ const updateDoc = (doc: any) => {
       console.log(response)
       fetchData()
     })
-    .catch(function (err: any) {
-      console.log(err)
+    .catch((err: any) => {
+      console.log('Erreur lors de la mise à jour du document', err)
     })
 }
 
@@ -81,15 +89,31 @@ const deleteDoc = (doc: any) => {
       console.log(response)
       fetchData()
     })
-    .catch(function (err: any) {
-      console.log(err)
+    .catch((err: any) => {
+      console.log('Erreur lors de la suppression du document', err)
     })
 }
 
+const MAJserveur = async () => {
+  const remoteDB = new PouchDB('http://nuno:Nunofaria17@localhost:5984/infradonn2_chat');
+  
+  try {
+    await storage.value.replicate.from(remoteDB);
+    console.log('Données récupérées du serveur');
+
+    await storage.value.replicate.to(remoteDB);
+    console.log('Données envoyées au serveur');
+
+    fetchData();
+  } catch (err) {
+    console.error('Erreur de synchronisation :(', err);
+  }
+};
+
 onMounted(() => {
   console.log('=> Composant initialisé')
-  initDatabase()
-  fetchData()
+  initDatabase()  
+  fetchData()     
 })
 </script>
 
@@ -107,5 +131,9 @@ onMounted(() => {
   </ul>
   <button @click="createDoc({ nom: 'Nuno', age: 22, ville: 'Lausanne', sport: 'foot' })">
     Créer
+  </button>
+
+  <button @click="MAJserveur">
+    Mettre à jour le serveur. Envoyer les données.
   </button>
 </template>
