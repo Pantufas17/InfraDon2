@@ -89,7 +89,7 @@ const deleteDoc = (doc: any) => {
     })
 }
 
-// Fonction pour basculer entre le mode offline et online
+//online / ofline
 const toggleOfflineMode = () => {
   isOffline.value = !isOffline.value
   if (isOffline.value) {
@@ -128,7 +128,6 @@ const createIndex = () => {
   })
 }
 
-// Recherche d'un document par nom
 const searchByName = (searchTerm: string) => {
   storage.value?.find({
     selector: { nom: { $eq: searchTerm } },
