@@ -89,7 +89,7 @@ const deleteDoc = (doc: any) => {
     })
 }
 
-//online / ofline
+//online / ofline mode
 const toggleOfflineMode = () => {
   isOffline.value = !isOffline.value
   if (isOffline.value) {
