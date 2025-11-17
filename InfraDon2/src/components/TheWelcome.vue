@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-// Importez PouchDB Find pour la recherche indexée (important pour le TP)
 import PouchDB from 'pouchdb'
 import PouchDBFind from 'pouchdb-find'
-PouchDB.plugin(PouchDBFind) // Active le plugin find
+PouchDB.plugin(PouchDBFind) 
 
-// --- Interfaces et Types ---
+
 declare interface Post {
     nom: string
     age: number
@@ -15,14 +14,14 @@ declare interface Post {
     _rev?: string
 }
 
-// --- Références ---
+
 const counter = ref(0)
 const storage = ref<PouchDB.Database | undefined>()
 const postsData = ref<Post[]>([])
 const isOffline = ref(false)
-const searchTerm = ref('') // NOUVEAU : Pour la recherche indexée
+const searchTerm = ref('') 
 
-// NOUVEAU : Référence pour gérer l'arrêt de la réplication continue
+
 let replicationHandle: PouchDB.Replication.Sync<Post> | null = null
 const COUCH_DB_URL = 'http://nuno:Nunofaria17@localhost:5984/infradonn2_chat' 
 
@@ -31,16 +30,15 @@ const increment = () => {
     counter.value++
 }
 
-// NOUVEAU : Fonction pour démarrer la réplication live bidirectionnelle (sync)
+
 const startLiveReplication = (db: PouchDB.Database) => {
-    if (replicationHandle) return // Évite de démarrer deux fois
+    if (replicationHandle) return 
 
     replicationHandle = db.sync(COUCH_DB_URL, {
         live: true, 
         retry: true, 
     })
     .on('change', () => {
-        // Rafraîchir la liste à chaque changement répliqué
         fetchData() 
     })
     .on('error', (err) => {
@@ -56,7 +54,6 @@ const initDatabase = () => {
     storage.value = localDB
     console.log('Base locale :', localDB?.name)
 
-    // Remplace l'ancien bloc replicate.from par le lancement du sync
     if (!isOffline.value) {
         startLiveReplication(localDB)
     }
@@ -93,9 +90,6 @@ const updateDoc = (doc: any) => {
     storage.value?.put(newDoc)
         .then((response: any) => {
             console.log(response)
-            // Optionnel : mise à jour locale pour éviter le fetchData lent
-            // doc._rev = response.rev 
-            // doc.ville = newDoc.ville
             fetchData() 
         })
         .catch((err: any) => {
@@ -120,13 +114,13 @@ const toggleOfflineMode = () => {
     if (isOffline.value) {
         console.log("Mode offline activé. Arrêt de la synchronisation.")
         if (replicationHandle) {
-            replicationHandle.cancel() // Arrête la synchro live
+            replicationHandle.cancel() 
             replicationHandle = null
         }
     } else {
         console.log("Mode online activé. Redémarrage de la synchronisation.")
         if (storage.value) {
-            startLiveReplication(storage.value) // Redémarre la synchro live
+            startLiveReplication(storage.value) 
         }
     }
 }
@@ -155,7 +149,7 @@ const createFactoryDocs = () => {
     const docsToAdd: Post[] = []
     const sports = ['Football', 'Basketball', 'Tennis', 'Natation', 'Course', 'Escrime', 'Rugby', 'Volley']
     
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 20; i++) { // faire "peu" pour ne pas devoir effacer tout a la main apres
         const doc: Post = {
             nom: `Factory User ${i + 1}`,
             age: Math.floor(Math.random() * 50) + 18,
@@ -243,7 +237,7 @@ onMounted(() => {
     <div>
         <h2>2. Factory et Recherche Indexée</h2>
         <button @click="createFactoryDocs" style="margin-bottom: 10px;">
-            Factory : Générer 50 documents
+            Factory : Rajoutter 20 documents
         </button>
         <br>
         <input 
