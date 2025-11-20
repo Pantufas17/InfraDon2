@@ -4,21 +4,30 @@ import PouchDB from 'pouchdb'
 import PouchDBFind from 'pouchdb-find'
 PouchDB.plugin(PouchDBFind)
 
+// --- INTERFACES ---
+declare interface Comment {
+  id: string
+  text: string
+  date: string
+}
+
 declare interface Post {
   nom: string
   age: number
   ville: string
   sport: string
+  likes: number           // Nouveau
+  comments: Comment[]     // Nouveau
   _id?: string
   _rev?: string
 }
 
+// --- STATE ---
 const counter = ref(0)
 const storage = ref<PouchDB.Database | undefined>()
 const postsData = ref<Post[]>([])
 const isOffline = ref(false)
 const searchTerm = ref('')
-
 let replicationHandle: PouchDB.Replication.Sync<Post> | null = null
 const COUCH_DB_URL = 'http://nuno:Nunofaria17@localhost:5984/infradonn2_chat'
 
@@ -26,264 +35,249 @@ const increment = () => {
   counter.value++
 }
 
+// --- REPLICATION & CONNEXION ---
 const startLiveReplication = (db: PouchDB.Database) => {
   if (replicationHandle) return
-
-  replicationHandle = db
-    .sync(COUCH_DB_URL, {
-      live: true,
-      retry: true,
-    })
-    .on('change', () => {
-      fetchData()
-    })
-    .on('error', (err) => {
-      console.error('Erreur de synchronisation live:', err)
-    })
+  replicationHandle = db.sync(COUCH_DB_URL, { live: true, retry: true })
+    .on('change', () => fetchData()) // Rafraîchir à chaque changement
+    .on('error', (err) => console.error('Erreur sync:', err))
 }
 
 const initDatabase = () => {
-  console.log('=> Connexion à la base de données')
-
+  console.log('=> Connexion DB')
   const localDB = new PouchDB('Posts')
   storage.value = localDB
-  console.log('Base locale :', localDB?.name)
-
   if (!isOffline.value) {
     startLiveReplication(localDB)
   }
 }
 
-const fetchData = () => {
-  storage.value
-    ?.allDocs({
-      include_docs: true,
-      attachments: true,
-    })
-    .then((result: any) => {
-      postsData.value = result.rows.map((row: any) => row.doc)
-      console.log('Documents récupérés:', postsData.value.length)
-    })
-    .catch((err: any) => {
-      console.log('Erreur pour récupérer des données', err)
-    })
-}
-
-const createDoc = (newDoc: any) => {
-  storage.value
-    ?.post(newDoc)
-    .then((response: any) => {
-      console.log(response)
-      fetchData()
-    })
-    .catch((err: any) => {
-      console.log('Erreur lors de la création du document :(', err)
-    })
-}
-
-const updateDoc = (doc: any) => {
-  const newDoc = { ...doc }
-  newDoc.ville = 'Update ' + new Date().toISOString()
-  storage.value
-    ?.put(newDoc)
-    .then((response: any) => {
-      console.log(response)
-      fetchData()
-    })
-    .catch((err: any) => {
-      console.log('Erreur lors de la mise à jour du document', err)
-    })
-}
-
-const deleteDoc = (doc: any) => {
-  storage.value
-    ?.remove(doc)
-    .then((response: any) => {
-      console.log(response)
-      fetchData()
-    })
-    .catch((err: any) => {
-      console.log('Erreur lors de la suppression du document', err)
-    })
-}
-
-//online / ofline mode (mis à jour pour annuler/redémarrer la synchronisation)
 const toggleOfflineMode = () => {
   isOffline.value = !isOffline.value
   if (isOffline.value) {
-    console.log('Mode offline activé. Arrêt de la synchronisation.')
     if (replicationHandle) {
       replicationHandle.cancel()
       replicationHandle = null
     }
+    console.log("Offline")
   } else {
-    console.log('Mode online activé. Redémarrage de la synchronisation.')
     if (storage.value) {
       startLiveReplication(storage.value)
+      MAJserveur()
     }
+    console.log("Online")
   }
 }
 
 const MAJserveur = async () => {
   const remoteDB = new PouchDB(COUCH_DB_URL)
-
   try {
     await storage.value?.replicate.to(remoteDB)
-    console.log('Données envoyées au serveur')
-
     await storage.value?.replicate.from(remoteDB)
-    console.log('Données récupérées du serveur')
-
     fetchData()
   } catch (err) {
-    console.error('Erreur de synchronisation :(', err)
+    console.error('Erreur sync manuelle:', err)
   }
 }
 
-// nouvelle partie factory pour generer du cuop et alimenter d un coup ma db avec des truxs random
+// --- CRUD POSTS DE BASE ---
+const fetchData = () => {
+  // Par défaut, on récupère tout. 
+  // Note: Pour le tri, on utilisera sortByLikes explicitement.
+  storage.value?.allDocs({ include_docs: true, attachments: true })
+    .then((result: any) => {
+      postsData.value = result.rows.map((row: any) => row.doc)
+    })
+    .catch((err: any) => console.log(err))
+}
+
+const createDoc = (newDoc: any) => {
+  // Initialiser les nouveaux champs
+  newDoc.likes = 0
+  newDoc.comments = []
+  
+  storage.value?.post(newDoc)
+    .then(() => fetchData())
+    .catch((err: any) => console.log(err))
+}
+
+const updateDoc = (doc: any) => {
+  const newDoc = { ...doc }
+  newDoc.ville = 'Update ' + new Date().toISOString() // Exemple de modif
+  storage.value?.put(newDoc)
+    .then(() => fetchData())
+    .catch((err: any) => console.log(err))
+}
+
+const deleteDoc = (doc: any) => {
+  storage.value?.remove(doc)
+    .then(() => fetchData())
+    .catch((err: any) => console.log(err))
+}
+
+// --- FEATURES AJOUTÉES ---
+
+// 1. LIKES
+const toggleLike = (post: any) => {
+  const updated = { ...post, likes: (post.likes || 0) + 1 }
+  storage.value?.put(updated)
+    .then(() => fetchData()) // On pourrait optimiser, mais fetchData suffit
+    .catch((e) => console.error(e))
+}
+
+// 2. TRI PAR LIKES (DB SIDE)
+const sortByLikes = () => {
+  // Utilise l'index pour trier sans TS
+  storage.value?.find({
+    selector: { likes: { $exists: true } },
+    sort: [{ likes: 'desc' }]
+  }).then((res: any) => {
+    postsData.value = res.docs
+    console.log("Trié par likes via DB")
+  }).catch((e) => console.error(e))
+}
+
+// 3. COMMENTAIRES (Ajout / Modif / Suppr)
+const addComment = (post: any) => {
+  const txt = prompt("Commentaire :")
+  if (!txt) return
+  
+  const newCom: Comment = {
+    id: Date.now().toString(),
+    text: txt,
+    date: new Date().toISOString()
+  }
+  
+  const updated = { ...post, comments: [...(post.comments || []), newCom] }
+  storage.value?.put(updated).then(() => fetchData())
+}
+
+const editComment = (post: any, comment: Comment) => {
+  const newTxt = prompt("Modifier commentaire :", comment.text)
+  if (!newTxt) return
+
+  // On met à jour le tableau localement puis on envoie
+  const updatedComments = post.comments.map((c: Comment) => {
+    if (c.id === comment.id) return { ...c, text: newTxt }
+    return c
+  })
+  
+  const updated = { ...post, comments: updatedComments }
+  storage.value?.put(updated).then(() => fetchData())
+}
+
+const deleteComment = (post: any, commentId: string) => {
+  const updatedComments = post.comments.filter((c: Comment) => c.id !== commentId)
+  const updated = { ...post, comments: updatedComments }
+  storage.value?.put(updated).then(() => fetchData())
+}
+
+// --- FACTORY & INDEX & RECHERCHE ---
+
 const createFactoryDocs = () => {
   if (!storage.value) return
-
   const docsToAdd: Post[] = []
-  const sports = [
-    'Football',
-    'Basketball',
-    'Tennis',
-    'Natation',
-    'Course',
-    'Escrime',
-    'Rugby',
-    'Volley',
-  ]
-
+  const sports = ['Football', 'Tennis', 'Rugby']
+  
   for (let i = 0; i < 20; i++) {
-    // faire "peu" pour ne pas devoir effacer tout a la main apres
     const doc: Post = {
-      nom: `Factory User ${i + 1}`,
-      age: Math.floor(Math.random() * 50) + 18,
-      ville: `Ville ${Math.floor(Math.random() * 10)}`,
-      sport: sports[Math.floor(Math.random() * sports.length)],
+      nom: `User ${i + 1}`,
+      age: 20 + i,
+      ville: `Ville ${i}`,
+      sport: sports[i % 3],
+      likes: Math.floor(Math.random() * 50), // Random likes
+      comments: []
     }
     docsToAdd.push(doc)
   }
-
-  storage.value
-    .bulkDocs(docsToAdd)
-    .then(() => {
-      console.log(`✅ ${docsToAdd.length} documents ajoutés par la factory.`)
-      fetchData()
-    })
-    .catch((err) => {
-      console.error('Erreur bulkDocs:', err)
-    })
+  storage.value.bulkDocs(docsToAdd).then(() => fetchData())
 }
 
-//13.11 creation index => Aide utilisation IA car je n'arrivais pas, ca me faisait des erreurs a chaque fois
 const createIndex = () => {
-  storage.value
-    ?.createIndex({
-      index: { fields: ['nom'] },
-    })
-    .then((result) => {
-      console.log('Index créé sur le champ "nom"', result)
-    })
-    .catch((err) => {
-      console.error('Erreur lors de la création de l’index', err)
-    })
+  // Index pour le tri par likes
+  storage.value?.createIndex({ index: { fields: ['likes'] } })
+  // Index pour la recherche par nom
+  storage.value?.createIndex({ index: { fields: ['nom'] } })
 }
 
-//Egalement aide IA car, quand je faisait la recherche ca ne marchait pas. Ca faisait pas match
 const searchByName = () => {
-  if (!storage.value || !searchTerm.value.trim()) {
+  if (!searchTerm.value) {
     fetchData()
     return
   }
-
-  const regex = new RegExp(`^${searchTerm.value.trim()}`, 'i')
-
-  storage.value
-    ?.find({
-      selector: {
-        nom: { $regex: regex },
-      },
-      fields: ['_id', 'nom', 'age', 'ville', 'sport'],
-    })
-    .then((result: any) => {
-      console.log('Résultats de la recherche floue:', result.docs.length)
-      postsData.value = result.docs
-    })
-    .catch((err) => {
-      console.error('Erreur lors de la recherche', err)
-    })
+  // Recherche DB via Regex
+  const regex = new RegExp(`^${searchTerm.value}`, 'i')
+  storage.value?.find({
+    selector: { nom: { $regex: regex } }
+  }).then((res: any) => {
+    postsData.value = res.docs
+  })
 }
 
 onMounted(() => {
-  console.log('=> Composant initialisé')
   initDatabase()
   createIndex()
+  fetchData()
 })
 </script>
 
 <template>
-   
-  <h1>Posts - Pratique InfraDon2</h1>
-   
-  <p>Counter: {{ counter }}</p>
-    <button @click="increment">+1</button>    
-
-
-   
+  <h1>TP Infra Données</h1>
+  <p>Compteur: {{ counter }} <button @click="increment">+1</button></p>
+  
+  <hr>
+  
   <div>
-    <h2>1. Gestion Offline / Réplication</h2>
-    <p>Statut : <strong>
-        {{ isOffline ? 'HORS LIGNE' : 'EN LIGNE' }}
-    </strong></p>
-
-       
-    <button @click="toggleOfflineMode" style="margin-right: 10px">
-            {{ isOffline ? 'Passer en mode Online' : 'Passer en mode Offline' }}    
-    </button>
-
-    <button @click="MAJserveur" :disabled="!isOffline">
-          Synchronisation Manuelle (Envoyer/Récupérer)    
-    </button>
-     
+    <h2>Connexion</h2>
+    <p>Etat: {{ isOffline ? 'HORS LIGNE' : 'EN LIGNE' }}</p>
+    <button @click="toggleOfflineMode">Basculer Mode</button>
+    <button @click="MAJserveur">Sync Manuelle</button>
   </div>
 
+  <hr>
 
   <div>
-    <h2>2. Factory et Recherche Indexée</h2>
-    <button @click="createFactoryDocs" style="margin-bottom: 10px">
-      Factory : Rajoutter 20 documents
-    </button>
-    <input
-      type="text"
-      v-model="searchTerm"
-      placeholder="Rechercher par nom (indexé)"
-      style="margin-right: 5px"
-    />
-    <button @click="searchByName">      Rechercher    </button>
-    <button @click="fetchData" style="margin-left: 10px">Afficher tout</button>
+    <h2>Outils</h2>
+    <button @click="createFactoryDocs">Factory (20 docs)</button>
+    <br>
+    <button @click="sortByLikes">Trier par Likes (via DB)</button>
+    <br>
+    <input v-model="searchTerm" placeholder="Nom..." >
+    <button @click="searchByName">Rechercher</button>
+    <button @click="fetchData">Reset</button>
   </div>
 
-     
-  <p>PostDatas</p>
-   
-  <ul>
-       
-    <li
-      v-for="post in postsData"
-      :key="post._id"
-      style="border-bottom: 1px dotted #ccc; padding: 5px 0"
-    >
-            {{ post.nom }} - {{ post.age }} - {{ post.ville }} [{{ post.sport }}]      
-      <button @click="updateDoc(post)">Modifier</button>      
-      <button @click="deleteDoc(post)">Supprimer</button>    
-    </li>
-     
-  </ul>
-     
+  <hr>
+
+  <div>
+    <h2>Liste des Posts</h2>
+    <ul>
+      <li v-for="post in postsData" :key="post._id">
+        
+        <h3>{{ post.nom }} ({{ post.likes }} likes)</h3>
+        <p>{{ post.ville }} - {{ post.sport }}</p>
+        
+        <button @click="toggleLike(post)">Liker</button>
+        <button @click="updateDoc(post)">Modifier Post</button>
+        <button @click="deleteDoc(post)">Supprimer Post</button>
+        <button @click="addComment(post)">Ajouter Commentaire</button>
+
+        <div v-if="post.comments && post.comments.length > 0">
+           <h4>Commentaires:</h4>
+           <ul>
+             <li v-for="comment in post.comments" :key="comment.id">
+               {{ comment.text }}
+               <button @click="editComment(post, comment)">Edit</button>
+               <button @click="deleteComment(post, comment.id)">Suppr</button>
+             </li>
+           </ul>
+        </div>
+        <hr>
+      </li>
+    </ul>
+  </div>
+
   <button @click="createDoc({ nom: 'Nuno', age: 22, ville: 'Lausanne', sport: 'foot' })">
-        Créer un document  
+    Créer Document Test
   </button>
 </template>
