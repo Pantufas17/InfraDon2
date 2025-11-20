@@ -4,25 +4,23 @@ import PouchDB from 'pouchdb'
 import PouchDBFind from 'pouchdb-find'
 PouchDB.plugin(PouchDBFind)
 
-// --- INTERFACES ---
+
 declare interface Comment {
   id: string
   text: string
   date: string
 }
-
 declare interface Post {
   nom: string
   age: number
   ville: string
   sport: string
-  likes: number           // Nouveau
-  comments: Comment[]     // Nouveau
+  likes: number           
+  comments: Comment[]     
   _id?: string
   _rev?: string
 }
 
-// --- STATE ---
 const counter = ref(0)
 const storage = ref<PouchDB.Database | undefined>()
 const postsData = ref<Post[]>([])
@@ -35,11 +33,10 @@ const increment = () => {
   counter.value++
 }
 
-// --- REPLICATION & CONNEXION ---
 const startLiveReplication = (db: PouchDB.Database) => {
   if (replicationHandle) return
   replicationHandle = db.sync(COUCH_DB_URL, { live: true, retry: true })
-    .on('change', () => fetchData()) // Rafraîchir à chaque changement
+    .on('change', () => fetchData()) 
     .on('error', (err) => console.error('Erreur sync:', err))
 }
 
@@ -79,11 +76,7 @@ const MAJserveur = async () => {
     console.error('Erreur sync manuelle:', err)
   }
 }
-
-// --- CRUD POSTS DE BASE ---
 const fetchData = () => {
-  // Par défaut, on récupère tout. 
-  // Note: Pour le tri, on utilisera sortByLikes explicitement.
   storage.value?.allDocs({ include_docs: true, attachments: true })
     .then((result: any) => {
       postsData.value = result.rows.map((row: any) => row.doc)
@@ -92,7 +85,6 @@ const fetchData = () => {
 }
 
 const createDoc = (newDoc: any) => {
-  // Initialiser les nouveaux champs
   newDoc.likes = 0
   newDoc.comments = []
   
@@ -103,7 +95,7 @@ const createDoc = (newDoc: any) => {
 
 const updateDoc = (doc: any) => {
   const newDoc = { ...doc }
-  newDoc.ville = 'Update ' + new Date().toISOString() // Exemple de modif
+  newDoc.ville = 'Update ' + new Date().toISOString() 
   storage.value?.put(newDoc)
     .then(() => fetchData())
     .catch((err: any) => console.log(err))
@@ -115,29 +107,33 @@ const deleteDoc = (doc: any) => {
     .catch((err: any) => console.log(err))
 }
 
-// --- FEATURES AJOUTÉES ---
-
-// 1. LIKES
 const toggleLike = (post: any) => {
   const updated = { ...post, likes: (post.likes || 0) + 1 }
   storage.value?.put(updated)
-    .then(() => fetchData()) // On pourrait optimiser, mais fetchData suffit
+    .then(() => fetchData())
     .catch((e) => console.error(e))
 }
 
-// 2. TRI PAR LIKES (DB SIDE)
 const sortByLikes = () => {
-  // Utilise l'index pour trier sans TS
-  storage.value?.find({
-    selector: { likes: { $exists: true } },
-    sort: [{ likes: 'desc' }]
-  }).then((res: any) => {
-    postsData.value = res.docs
-    console.log("Trié par likes via DB")
-  }).catch((e) => console.error(e))
+  if (!storage.value) return
+
+  console.log('Tentative de tri...')
+
+  storage.value.find({
+    selector: {
+       likes: { $gte: 0 } 
+    },
+    sort: [{ likes: 'desc' }] 
+  })
+  .then((result: any) => {
+    console.log(`Tri réussi : ${result.docs.length} documents.`)
+    postsData.value = result.docs
+  })
+  .catch((err: any) => {
+    console.error('Erreur Tri:', err)
+  })
 }
 
-// 3. COMMENTAIRES (Ajout / Modif / Suppr)
 const addComment = (post: any) => {
   const txt = prompt("Commentaire :")
   if (!txt) return
@@ -156,7 +152,6 @@ const editComment = (post: any, comment: Comment) => {
   const newTxt = prompt("Modifier commentaire :", comment.text)
   if (!newTxt) return
 
-  // On met à jour le tableau localement puis on envoie
   const updatedComments = post.comments.map((c: Comment) => {
     if (c.id === comment.id) return { ...c, text: newTxt }
     return c
@@ -172,8 +167,6 @@ const deleteComment = (post: any, commentId: string) => {
   storage.value?.put(updated).then(() => fetchData())
 }
 
-// --- FACTORY & INDEX & RECHERCHE ---
-
 const createFactoryDocs = () => {
   if (!storage.value) return
   const docsToAdd: Post[] = []
@@ -185,7 +178,7 @@ const createFactoryDocs = () => {
       age: 20 + i,
       ville: `Ville ${i}`,
       sport: sports[i % 3],
-      likes: Math.floor(Math.random() * 50), // Random likes
+      likes: Math.floor(Math.random() * 50), 
       comments: []
     }
     docsToAdd.push(doc)
@@ -194,10 +187,15 @@ const createFactoryDocs = () => {
 }
 
 const createIndex = () => {
-  // Index pour le tri par likes
-  storage.value?.createIndex({ index: { fields: ['likes'] } })
-  // Index pour la recherche par nom
-  storage.value?.createIndex({ index: { fields: ['nom'] } })
+  storage.value?.createIndex({
+      index: { fields: ['nom'] }
+  }).then(() => {
+      return storage.value?.createIndex({
+          index: { fields: ['likes'] } 
+      })
+  }).catch((err) => {
+      console.error('Erreur Index:', err)
+  })
 }
 
 const searchByName = () => {
@@ -205,7 +203,6 @@ const searchByName = () => {
     fetchData()
     return
   }
-  // Recherche DB via Regex
   const regex = new RegExp(`^${searchTerm.value}`, 'i')
   storage.value?.find({
     selector: { nom: { $regex: regex } }
@@ -230,8 +227,8 @@ onMounted(() => {
   <div>
     <h2>Connexion</h2>
     <p>Etat: {{ isOffline ? 'HORS LIGNE' : 'EN LIGNE' }}</p>
-    <button @click="toggleOfflineMode">Basculer Mode</button>
-    <button @click="MAJserveur">Sync Manuelle</button>
+    <button @click="toggleOfflineMode">Changer mode Online : Offline</button>
+    <button @click="MAJserveur">MAJ manuellement</button>
   </div>
 
   <hr>
@@ -240,11 +237,11 @@ onMounted(() => {
     <h2>Outils</h2>
     <button @click="createFactoryDocs">Factory (20 docs)</button>
     <br>
-    <button @click="sortByLikes">Trier par Likes (via DB)</button>
+    <button @click="sortByLikes">Trier par Likes</button>
     <br>
     <input v-model="searchTerm" placeholder="Nom..." >
     <button @click="searchByName">Rechercher</button>
-    <button @click="fetchData">Reset</button>
+    <button @click="fetchData">Reset Liste</button>
   </div>
 
   <hr>
