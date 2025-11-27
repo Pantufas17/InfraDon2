@@ -4,287 +4,313 @@ import PouchDB from 'pouchdb'
 import PouchDBFind from 'pouchdb-find'
 PouchDB.plugin(PouchDBFind)
 
-declare interface Comment {
-  id: string
+declare interface CommentDoc {
+  _id?: string
+  _rev?: string
+  postId: string 
   text: string
   date: string
 }
+
 declare interface Post {
+  _id?: string
+  _rev?: string
   nom: string
   age: number
   ville: string
   sport: string
   likes: number
-  comments: Comment[]
-  _id?: string
-  _rev?: string
+  displayComments?: CommentDoc[] 
 }
 
 const counter = ref(0)
-const storage = ref<PouchDB.Database | undefined>()
+
+const postsDB = ref<PouchDB.Database | undefined>()
+const commentsDB = ref<PouchDB.Database | undefined>()
+
 const postsData = ref<Post[]>([])
 const isOffline = ref(false)
 const searchTerm = ref('')
-let replicationHandle: PouchDB.Replication.Sync<Post> | null = null
-const COUCH_DB_URL = 'http://nuno:Nunofaria17@localhost:5984/infradonn2_chat'
 
+let postSyncHandler: PouchDB.Replication.Sync<any> | null = null
+let commentSyncHandler: PouchDB.Replication.Sync<any> | null = null
+
+const COUCH_URL_POSTS = 'http://nuno:Nunofaria17@localhost:5984/infradonn2_chat'
+const COUCH_URL_COMMENTS = 'http://nuno:Nunofaria17@localhost:5984/infradonn2_comments' 
+//du cpoup la cest la nouvelle collections
 const increment = () => {
   counter.value++
 }
 
-const startLiveReplication = (db: PouchDB.Database) => {
-  if (replicationHandle) return
-  replicationHandle = db
-    .sync(COUCH_DB_URL, { live: true, retry: true })
-    .on('change', () => fetchData())
-    .on('error', (err) => console.error('Erreur sync:', err))
+
+const initDatabases = () => {
+  console.log('=> Init des 2 Collections')
+  
+  postsDB.value = new PouchDB('Posts')
+  
+  commentsDB.value = new PouchDB('Comments')
+
+  if (!isOffline.value) {
+    startLiveReplication()
+  }
 }
 
-const initDatabase = () => {
-  console.log('=> Connexion DB')
-  const localDB = new PouchDB('Posts')
-  storage.value = localDB
-  if (!isOffline.value) {
-    startLiveReplication(localDB)
-  }
+const startLiveReplication = () => {
+  if (postSyncHandler || !postsDB.value || !commentsDB.value) return
+
+  postSyncHandler = postsDB.value.sync(COUCH_URL_POSTS, { live: true, retry: true })
+    .on('change', () => fetchData())
+
+  commentSyncHandler = commentsDB.value.sync(COUCH_URL_COMMENTS, { live: true, retry: true })
+    .on('change', () => fetchData())
 }
 
 const toggleOfflineMode = () => {
   isOffline.value = !isOffline.value
   if (isOffline.value) {
-    if (replicationHandle) {
-      replicationHandle.cancel()
-      replicationHandle = null
-    }
-    console.log('Offline')
+    postSyncHandler?.cancel(); postSyncHandler = null;
+    commentSyncHandler?.cancel(); commentSyncHandler = null;
+    console.log("Mode Offline")
   } else {
-    if (storage.value) {
-      startLiveReplication(storage.value)
-      MAJserveur()
-    }
-    console.log('Online')
+    startLiveReplication()
+    console.log("Mode Online")
   }
 }
 
 const MAJserveur = async () => {
-  const remoteDB = new PouchDB(COUCH_DB_URL)
   try {
-    await storage.value?.replicate.to(remoteDB)
-    await storage.value?.replicate.from(remoteDB)
+    await postsDB.value?.replicate.to(COUCH_URL_POSTS)
+    await postsDB.value?.replicate.from(COUCH_URL_POSTS)
+    await commentsDB.value?.replicate.to(COUCH_URL_COMMENTS).catch(e => console.log('Pas de DB remote comments'))
+    await commentsDB.value?.replicate.from(COUCH_URL_COMMENTS).catch(e => console.log('Pas de DB remote comments'))
+    
     fetchData()
   } catch (err) {
     console.error('Erreur sync manuelle:', err)
   }
 }
-const fetchData = () => {
-  storage.value
-    ?.allDocs({ include_docs: true, attachments: true })
-    .then((result: any) => {
-      postsData.value = result.rows.map((row: any) => row.doc)
+
+
+const fetchData = async () => {
+  if (!postsDB.value || !commentsDB.value) return
+
+  try {
+    const allPosts = await postsDB.value.allDocs({ include_docs: true })
+    const posts = allPosts.rows.map((row: any) => row.doc)
+
+    const allComments = await commentsDB.value.allDocs({ include_docs: true })
+    const comments = allComments.rows.map((row: any) => row.doc)
+
+    postsData.value = posts.map((post: Post) => {
+      const linkedComments = comments.filter((c: CommentDoc) => c.postId === post._id)
+      return { ...post, displayComments: linkedComments }
     })
-    .catch((err: any) => console.log(err))
+
+    console.log('Données chargées et jointes.')
+  } catch (err) {
+    console.error('Erreur fetchData:', err)
+  }
 }
+
 
 const createDoc = (newDoc: any) => {
   newDoc.likes = 0
-  newDoc.comments = []
-
-  storage.value
-    ?.post(newDoc)
-    .then(() => fetchData())
-    .catch((err: any) => console.log(err))
+  postsDB.value?.post(newDoc).then(() => fetchData())
 }
 
-const updateDoc = (doc: any) => {
-  const newDoc = { ...doc }
-  newDoc.ville = 'Update ' + new Date().toISOString()
-  storage.value
-    ?.put(newDoc)
+const deleteDoc = (doc: Post) => {
+  // Suppression du post
+  postsDB.value?.remove(doc._id!, doc._rev!)
     .then(() => fetchData())
-    .catch((err: any) => console.log(err))
 }
 
-const deleteDoc = (doc: any) => {
-  storage.value
-    ?.remove(doc)
-    .then(() => fetchData())
-    .catch((err: any) => console.log(err))
+const updateDoc = (doc: Post) => {
+  const { displayComments, ...docToSave } = doc
+  const docUpdated = { ...docToSave, ville: 'Update ' + new Date().toISOString() }
+  
+  postsDB.value?.put(docUpdated).then(() => fetchData())
 }
 
-const toggleLike = (post: any) => {
-  const updated = { ...post, likes: (post.likes || 0) + 1 }
-  storage.value
-    ?.put(updated)
+const toggleLike = (post: Post) => {
+  const { displayComments, ...docToSave } = post
+  const updated = { ...docToSave, likes: (docToSave.likes || 0) + 1 }
+  
+  postsDB.value?.put(updated).then(() => fetchData())
+}
+
+
+const addComment = (post: Post) => {
+  const txt = prompt("Commentaire :")
+  if (!txt || !commentsDB.value) return
+
+  const newComment: CommentDoc = {
+
+    postId: post._id!, 
+    text: txt,
+    date: new Date().toISOString()
+  }
+
+  commentsDB.value.post(newComment)
+    .then(() => {
+      console.log("Commentaire ajouté dans la collection Comments")
+      fetchData();
+    })
+    .catch(err => console.error(err))
+}
+
+const deleteComment = (comment: CommentDoc) => {
+  if (!commentsDB.value || !comment._id || !comment._rev) return
+  
+  commentsDB.value.remove(comment._id, comment._rev)
     .then(() => fetchData())
-    .catch((e) => console.error(e))
+}
+
+
+//trier
+const createIndex = () => {
+  postsDB.value?.createIndex({ index: { fields: ['likes'] } })
+  postsDB.value?.createIndex({ index: { fields: ['nom'] } })
 }
 
 const sortByLikes = () => {
-  if (!storage.value) return
-
-
-  storage.value
-    .find({
-      selector: {
-        likes: { $gte: 0 },
-      },
-      sort: [{ likes: 'desc' }],
+  postsDB.value?.find({
+    selector: { likes: { $gte: 0 } },
+    sort: [{ likes: 'desc' }]
+  }).then((res: any) => {
+    
+    const sortedPosts = res.docs
+    
+//pour recuperer pour lier le commentaires ua posts
+    commentsDB.value?.allDocs({ include_docs: true }).then((comRes: any) => {
+       const allComments = comRes.rows.map((r: any) => r.doc)
+       
+       postsData.value = sortedPosts.map((post: Post) => {
+          const linked = allComments.filter((c: CommentDoc) => c.postId === post._id)
+          return { ...post, displayComments: linked }
+       })
     })
-    .then((result: any) => {
-      console.log(`Tri réussi : ${result.docs.length} documents.`)
-      postsData.value = result.docs
-    })
-    .catch((err: any) => {
-      console.error('Erreur Tri:', err)
-    })
-}
-
-const addComment = (post: any) => {
-  const txt = prompt('Commentaire :')
-  if (!txt) return
-
-  const newCom: Comment = {
-    id: Date.now().toString(),
-    text: txt,
-    date: new Date().toISOString(),
-  }
-
-  const updated = { ...post, comments: [...(post.comments || []), newCom] }
-  storage.value?.put(updated).then(() => fetchData())
-}
-
-const editComment = (post: any, comment: Comment) => {
-  const newTxt = prompt('Modifier commentaire :', comment.text)
-  if (!newTxt) return
-
-  const updatedComments = post.comments.map((c: Comment) => {
-    if (c.id === comment.id) return { ...c, text: newTxt }
-    return c
   })
-
-  const updated = { ...post, comments: updatedComments }
-  storage.value?.put(updated).then(() => fetchData())
 }
 
-const deleteComment = (post: any, commentId: string) => {
-  const updatedComments = post.comments.filter((c: Comment) => c.id !== commentId)
-  const updated = { ...post, comments: updatedComments }
-  storage.value?.put(updated).then(() => fetchData())
+const searchByName = () => {
+  if (!searchTerm.value) { fetchData(); return }
+  
+  const regex = new RegExp(`^${searchTerm.value}`, 'i')
+  postsDB.value?.find({
+    selector: { nom: { $regex: regex } }
+  }).then((res: any) => {
+    
+    const foundPosts = res.docs
+    commentsDB.value?.allDocs({ include_docs: true }).then((comRes: any) => {
+       const allComments = comRes.rows.map((r: any) => r.doc)
+       postsData.value = foundPosts.map((post: Post) => {
+          const linked = allComments.filter((c: CommentDoc) => c.postId === post._id)
+          return { ...post, displayComments: linked }
+       })
+    })
+  })
 }
 
-const createFactoryDocs = () => {
-  if (!storage.value) return
-  const docsToAdd: Post[] = []
+
+const createFactoryDocs = async () => {
+  if (!postsDB.value || !commentsDB.value) return
+  
+  const postsToAdd: any[] = []
+  const commentsToAdd: any[] = []
   const sports = ['Football', 'Tennis', 'Rugby']
 
-  for (let i = 0; i < 20; i++) {
-    const doc: Post = {
+  for (let i = 0; i < 10; i++) {
+    const postId = 'post_factory_' + Date.now() + '_' + i
+    const docPost = {
+      _id: postId, 
       nom: `User ${i + 1}`,
       age: 20 + i,
       ville: `Ville ${i}`,
       sport: sports[i % 3],
-      likes: 0, // chaque nouveau post du coup commence avec 0 likes
-      comments: [],
+      likes: Math.floor(Math.random() * 50)
     }
-    docsToAdd.push(doc)
+    postsToAdd.push(docPost)
+
+    
+    const docCom = {
+      postId: postId, 
+      text: `Super commentaire pour le post ${i}`,
+      date: new Date().toISOString()
+    }
+    commentsToAdd.push(docCom)
   }
-  storage.value.bulkDocs(docsToAdd).then(() => fetchData())
+
+  //mettre du coup dans les 2 collections nromalement
+  await postsDB.value.bulkDocs(postsToAdd)
+  await commentsDB.value.bulkDocs(commentsToAdd)
+  
+  console.log("Factory : Posts et Commentaires créés dans 2 collections.")
+  fetchData()
 }
 
-const createIndex = () => {
-  storage.value
-    ?.createIndex({
-      index: { fields: ['nom'] },
-    })
-    .then(() => {
-      return storage.value?.createIndex({
-        index: { fields: ['likes'] },
-      })
-    })
-    .catch((err) => {
-      console.error('Erreur Index:', err)
-    })
-}
-
-const searchByName = () => {
-  if (!searchTerm.value) {
-    fetchData()
-    return
-  }
-  const regex = new RegExp(`^${searchTerm.value}`, 'i')
-  storage.value
-    ?.find({
-      selector: { nom: { $regex: regex } },
-    })
-    .then((res: any) => {
-      postsData.value = res.docs
-    })
-}
 
 onMounted(() => {
-  initDatabase()
+  initDatabases()
   createIndex()
   fetchData()
 })
 </script>
 
 <template>
-  <h1>TP Infra Données</h1>
+  <h1>Tp InfraDon - Posts et Comms</h1>
   <p>Compteur: {{ counter }} <button @click="increment">+1</button></p>
-
-  <hr />
-
+  
+  <hr>
+  
   <div>
     <h2>Connexion</h2>
-    <p>Etat: {{ isOffline ? 'HORS LIGNE' : 'EN LIGNE' }}</p>
-    <!--Juste pour savoir si je suis en mode online ou pas-->
-    <button @click="toggleOfflineMode">Changer mode Online : Offline</button>
-    <button @click="MAJserveur">MAJ manuellement</button>
+    <p>Etat: <strong>{{ isOffline ? 'HORS LIGNE' : 'EN LIGNE' }}</strong></p>
+    <button @click="toggleOfflineMode">Changer <=> Online Offline</button>
+    <button @click="MAJserveur">Sync Manuelle</button>
   </div>
 
-  <hr />
+  <hr>
 
   <div>
     <h2>Outils</h2>
-    <button @click="createFactoryDocs">Factory (faire 20 docs randoms)</button>
-    <br />
-    <button @click="sortByLikes">Trier par Likes</button>
-    <br />
-    <input v-model="searchTerm" placeholder="Nom..." />
+    <button @click="createFactoryDocs">Factory (Avec implémentation 2 collections)</button>
+    <button @click="sortByLikes">Trier par Likes (DB)</button>
+    <br>
+    <input v-model="searchTerm" placeholder="Nom..." >
     <button @click="searchByName">Rechercher</button>
-    <button @click="fetchData">Trie de base</button>
+    <button @click="fetchData">Reset Liste</button>
   </div>
 
-  <hr />
+  <hr>
 
   <div>
     <h2>Liste des Posts</h2>
     <ul>
       <li v-for="post in postsData" :key="post._id">
+        
         <h3>{{ post.nom }} ({{ post.likes }} likes)</h3>
         <p>{{ post.ville }} - {{ post.sport }}</p>
-
+        
         <button @click="toggleLike(post)">Liker</button>
         <button @click="updateDoc(post)">Modifier Post</button>
         <button @click="deleteDoc(post)">Supprimer Post</button>
         <button @click="addComment(post)">Ajouter Commentaire</button>
 
-        <div v-if="post.comments && post.comments.length > 0">
-          <h4>Commentaires:</h4>
-          <ul>
-            <li v-for="comment in post.comments" :key="comment.id">
-              {{ comment.text }}
-              <button @click="editComment(post, comment)">Modifier</button>
-              <button @click="deleteComment(post, comment.id)">X</button>
-            </li>
-          </ul>
+        <div v-if="post.displayComments && post.displayComments.length > 0">
+           <h4>Commentaires:</h4>
+           <ul>
+             <li v-for="comment in post.displayComments" :key="comment._id">
+               {{ comment.text }}
+               <button @click="deleteComment(comment)">Suppr</button>
+             </li>
+           </ul>
         </div>
-        
+        <hr>
       </li>
     </ul>
   </div>
-  <hr></hr>
+
   <button @click="createDoc({ nom: 'Nuno', age: 22, ville: 'Lausanne', sport: 'foot' })">
-    Créer Document Test
+    Créer Document
   </button>
 </template>
