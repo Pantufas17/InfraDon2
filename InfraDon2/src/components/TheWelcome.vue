@@ -7,7 +7,7 @@ PouchDB.plugin(PouchDBFind)
 declare interface CommentDoc {
   _id?: string
   _rev?: string
-  postId: string 
+  postId: string
   text: string
   date: string
 }
@@ -20,7 +20,11 @@ declare interface Post {
   ville: string
   sport: string
   likes: number
-  displayComments?: CommentDoc[] 
+  displayComments?: CommentDoc[]
+
+  //pour pouvoir rajouter des medias a nos documents
+  _attachments?: any
+  imageSrc?: string
 }
 
 const counter = ref(0)
@@ -36,18 +40,16 @@ let postSyncHandler: PouchDB.Replication.Sync<any> | null = null
 let commentSyncHandler: PouchDB.Replication.Sync<any> | null = null
 
 const COUCH_URL_POSTS = 'http://nuno:Nunofaria17@localhost:5984/infradonn2_chat'
-const COUCH_URL_COMMENTS = 'http://nuno:Nunofaria17@localhost:5984/infradonn2_comments' 
-//du cpoup la cest la nouvelle collections
+const COUCH_URL_COMMENTS = 'http://nuno:Nunofaria17@localhost:5984/infradonn2_comments'
+
 const increment = () => {
   counter.value++
 }
 
-
 const initDatabases = () => {
   console.log('=> Init des 2 Collections')
-  
+
   postsDB.value = new PouchDB('Posts')
-  
   commentsDB.value = new PouchDB('Comments')
 
   if (!isOffline.value) {
@@ -58,22 +60,26 @@ const initDatabases = () => {
 const startLiveReplication = () => {
   if (postSyncHandler || !postsDB.value || !commentsDB.value) return
 
-  postSyncHandler = postsDB.value.sync(COUCH_URL_POSTS, { live: true, retry: true })
+  postSyncHandler = postsDB.value
+    .sync(COUCH_URL_POSTS, { live: true, retry: true })
     .on('change', () => fetchData())
 
-  commentSyncHandler = commentsDB.value.sync(COUCH_URL_COMMENTS, { live: true, retry: true })
+  commentSyncHandler = commentsDB.value
+    .sync(COUCH_URL_COMMENTS, { live: true, retry: true })
     .on('change', () => fetchData())
 }
 
 const toggleOfflineMode = () => {
   isOffline.value = !isOffline.value
   if (isOffline.value) {
-    postSyncHandler?.cancel(); postSyncHandler = null;
-    commentSyncHandler?.cancel(); commentSyncHandler = null;
-    console.log("Mode Offline")
+    postSyncHandler?.cancel()
+    postSyncHandler = null
+    commentSyncHandler?.cancel()
+    commentSyncHandler = null
+    console.log('Mode Offline')
   } else {
     startLiveReplication()
-    console.log("Mode Online")
+    console.log('Mode Online')
   }
 }
 
@@ -81,37 +87,49 @@ const MAJserveur = async () => {
   try {
     await postsDB.value?.replicate.to(COUCH_URL_POSTS)
     await postsDB.value?.replicate.from(COUCH_URL_POSTS)
-    await commentsDB.value?.replicate.to(COUCH_URL_COMMENTS).catch(e => console.log('Pas de DB remote comments'))
-    await commentsDB.value?.replicate.from(COUCH_URL_COMMENTS).catch(e => console.log('Pas de DB remote comments'))
-    
+    await commentsDB.value?.replicate.to(COUCH_URL_COMMENTS).catch((e) => console.log('Pas de DB remote comments'))
+    await commentsDB.value?.replicate.from(COUCH_URL_COMMENTS).catch((e) => console.log('Pas de DB remote comments'))
+
     fetchData()
   } catch (err) {
     console.error('Erreur sync manuelle:', err)
   }
 }
 
+//pour mettres les posts et medias ensenble 
+const processPostsForDisplay = async (rawPosts: Post[]) => {
+  if (!commentsDB.value || !postsDB.value) return []
 
-const fetchData = async () => {
-  if (!postsDB.value || !commentsDB.value) return
+  //pour tous les comms
+  const allCommentsRes = await commentsDB.value.allDocs({ include_docs: true })
+  const comments = allCommentsRes.rows.map((row: any) => row.doc)
 
-  try {
-    const allPosts = await postsDB.value.allDocs({ include_docs: true })
-    const posts = allPosts.rows.map((row: any) => row.doc)
-
-    const allComments = await commentsDB.value.allDocs({ include_docs: true })
-    const comments = allComments.rows.map((row: any) => row.doc)
-
-    postsData.value = posts.map((post: Post) => {
+  return await Promise.all(rawPosts.map(async (post: Post) => {
+      // Jointure commentaires
       const linkedComments = comments.filter((c: CommentDoc) => c.postId === post._id)
-      return { ...post, displayComments: linkedComments }
-    })
+      
+      let urlImage = ''
+      if (post._attachments && post._attachments['image']) {
+        try {
+          const blob = await postsDB.value!.getAttachment(post._id!, 'image') as Blob
+          urlImage = URL.createObjectURL(blob)
+        } catch (e) { console.log('Erreur image', e) }
+      }
 
-    console.log('Données chargées et jointes.')
-  } catch (err) {
-    console.error('Erreur fetchData:', err)
-  }
+      return { ...post, displayComments: linkedComments, imageSrc: urlImage }
+  }))
 }
 
+const fetchData = async () => {
+  if (!postsDB.value) return
+  try {
+    const allPosts = await postsDB.value.allDocs({ include_docs: true })
+    const rawPosts = allPosts.rows.map((row: any) => row.doc)
+    
+    postsData.value = await processPostsForDisplay(rawPosts)
+    
+  } catch (err) { console.error('Erreur fetchData:', err) }
+}
 
 const createDoc = (newDoc: any) => {
   newDoc.likes = 0
@@ -119,77 +137,85 @@ const createDoc = (newDoc: any) => {
 }
 
 const deleteDoc = (doc: Post) => {
-  // Suppression du post
-  postsDB.value?.remove(doc._id!, doc._rev!)
-    .then(() => fetchData())
+  postsDB.value?.remove(doc._id!, doc._rev!).then(() => fetchData())
 }
 
 const updateDoc = (doc: Post) => {
-  const { displayComments, ...docToSave } = doc
+  const { displayComments, imageSrc, ...docToSave } = doc
   const docUpdated = { ...docToSave, ville: 'Update ' + new Date().toISOString() }
-  
   postsDB.value?.put(docUpdated).then(() => fetchData())
 }
 
 const toggleLike = (post: Post) => {
-  const { displayComments, ...docToSave } = post
+  const { displayComments, imageSrc, ...docToSave } = post
   const updated = { ...docToSave, likes: (docToSave.likes || 0) + 1 }
-  
   postsDB.value?.put(updated).then(() => fetchData())
 }
 
-
 const addComment = (post: Post) => {
-  const txt = prompt("Commentaire :")
+  const txt = prompt('Commentaire :')
   if (!txt || !commentsDB.value) return
 
   const newComment: CommentDoc = {
-
-    postId: post._id!, 
+    postId: post._id!,
     text: txt,
-    date: new Date().toISOString()
+    date: new Date().toISOString(),
   }
 
-  commentsDB.value.post(newComment)
-    .then(() => {
-      console.log("Commentaire ajouté dans la collection Comments")
-      fetchData();
-    })
-    .catch(err => console.error(err))
+  commentsDB.value.post(newComment).then(() => fetchData())
 }
 
 const deleteComment = (comment: CommentDoc) => {
   if (!commentsDB.value || !comment._id || !comment._rev) return
-  
-  commentsDB.value.remove(comment._id, comment._rev)
-    .then(() => fetchData())
+  commentsDB.value.remove(comment._id, comment._rev).then(() => fetchData())
+}
+
+//gestion des medias
+const attachImage = async (event: any, post: Post) => {
+  const file = event.target.files[0]
+  if (!file || !postsDB.value || !post._id || !post._rev) return
+
+  try {
+    await postsDB.value.putAttachment(post._id, 'image', post._rev, file, file.type)
+    fetchData()
+  } catch (err) {
+    console.error('Erreur upload image:', err)
+  }
+}
+
+const deleteImage = async (post: Post) => {
+  if (!postsDB.value || !post._id || !post._rev) return
+  try {
+    await postsDB.value.removeAttachment(post._id, 'image', post._rev)
+    fetchData()
+  } catch (err) {
+    console.error('Erreur suppression image:', err)
+  }
 }
 
 
-//trier
 const createIndex = () => {
-  postsDB.value?.createIndex({ index: { fields: ['likes'] } })
-  postsDB.value?.createIndex({ index: { fields: ['nom'] } })
+  if (!postsDB.value) return
+  postsDB.value.createIndex({ index: { fields: ['likes'] } })
+    .then(() => postsDB.value?.createIndex({ index: { fields: ['nom'] } }))
+    .then(() => console.log("Index créés avec succès"))
+    .catch(err => console.error(" Erreur création index", err))
 }
 
 const sortByLikes = () => {
+  console.log("Tri en cours...")
   postsDB.value?.find({
-    selector: { likes: { $gte: 0 } },
-    sort: [{ likes: 'desc' }]
-  }).then((res: any) => {
-    
-    const sortedPosts = res.docs
-    
-//pour recuperer pour lier le commentaires ua posts
-    commentsDB.value?.allDocs({ include_docs: true }).then((comRes: any) => {
-       const allComments = comRes.rows.map((r: any) => r.doc)
-       
-       postsData.value = sortedPosts.map((post: Post) => {
-          const linked = allComments.filter((c: CommentDoc) => c.postId === post._id)
-          return { ...post, displayComments: linked }
-       })
+      selector: { likes: { $gte: 0 } },
+      sort: [{ likes: 'desc' }],
     })
-  })
+    .then(async (res: any) => { 
+      console.log("Tri réussi !", res.docs.length)
+      postsData.value = await processPostsForDisplay(res.docs) 
+    })
+    .catch(err => {
+        console.error("Erreur de tri :", err)
+        alert("Le tri a échoué. Vérifiez la console (F12). L'index est peut-être manquant.")
+    })
 }
 
 const searchByName = () => {
@@ -197,24 +223,16 @@ const searchByName = () => {
   
   const regex = new RegExp(`^${searchTerm.value}`, 'i')
   postsDB.value?.find({
-    selector: { nom: { $regex: regex } }
-  }).then((res: any) => {
-    
-    const foundPosts = res.docs
-    commentsDB.value?.allDocs({ include_docs: true }).then((comRes: any) => {
-       const allComments = comRes.rows.map((r: any) => r.doc)
-       postsData.value = foundPosts.map((post: Post) => {
-          const linked = allComments.filter((c: CommentDoc) => c.postId === post._id)
-          return { ...post, displayComments: linked }
-       })
+      selector: { nom: { $regex: regex } },
     })
-  })
+    .then(async (res: any) => { 
+       postsData.value = await processPostsForDisplay(res.docs)
+    })
 }
-
 
 const createFactoryDocs = async () => {
   if (!postsDB.value || !commentsDB.value) return
-  
+
   const postsToAdd: any[] = []
   const commentsToAdd: any[] = []
   const sports = ['Football', 'Tennis', 'Rugby']
@@ -222,32 +240,29 @@ const createFactoryDocs = async () => {
   for (let i = 0; i < 10; i++) {
     const postId = 'post_factory_' + Date.now() + '_' + i
     const docPost = {
-      _id: postId, 
+      _id: postId,
       nom: `User ${i + 1}`,
       age: 20 + i,
       ville: `Ville ${i}`,
       sport: sports[i % 3],
-      likes: Math.floor(Math.random() * 50)
+      likes: Math.floor(Math.random() * 50),
     }
     postsToAdd.push(docPost)
 
-    
     const docCom = {
-      postId: postId, 
+      postId: postId,
       text: `Super commentaire pour le post ${i}`,
-      date: new Date().toISOString()
+      date: new Date().toISOString(),
     }
     commentsToAdd.push(docCom)
   }
 
-  //mettre du coup dans les 2 collections nromalement
   await postsDB.value.bulkDocs(postsToAdd)
   await commentsDB.value.bulkDocs(commentsToAdd)
-  
-  console.log("Factory : Posts et Commentaires créés dans 2 collections.")
+
+  console.log('Factory OK')
   fetchData()
 }
-
 
 onMounted(() => {
   initDatabases()
@@ -259,53 +274,67 @@ onMounted(() => {
 <template>
   <h1>Tp InfraDon - Posts et Comms</h1>
   <p>Compteur: {{ counter }} <button @click="increment">+1</button></p>
-  
-  <hr>
-  
+
+  <hr />
+
   <div>
     <h2>Connexion</h2>
-    <p>Etat: <strong>{{ isOffline ? 'HORS LIGNE' : 'EN LIGNE' }}</strong></p>
+    <p>
+      Etat: <strong>{{ isOffline ? 'HORS LIGNE' : 'EN LIGNE' }}</strong>
+    </p>
     <button @click="toggleOfflineMode">Changer <=> Online Offline</button>
     <button @click="MAJserveur">Sync Manuelle</button>
   </div>
 
-  <hr>
+  <hr />
 
   <div>
     <h2>Outils</h2>
     <button @click="createFactoryDocs">Factory (Avec implémentation 2 collections)</button>
     <button @click="sortByLikes">Trier par Likes (DB)</button>
-    <br>
-    <input v-model="searchTerm" placeholder="Nom..." >
+    <br />
+    <input v-model="searchTerm" placeholder="Nom..." />
     <button @click="searchByName">Rechercher</button>
     <button @click="fetchData">Reset Liste</button>
   </div>
 
-  <hr>
+  <hr />
 
   <div>
     <h2>Liste des Posts</h2>
     <ul>
       <li v-for="post in postsData" :key="post._id">
-        
         <h3>{{ post.nom }} ({{ post.likes }} likes)</h3>
         <p>{{ post.ville }} - {{ post.sport }}</p>
-        
+
         <button @click="toggleLike(post)">Liker</button>
         <button @click="updateDoc(post)">Modifier Post</button>
         <button @click="deleteDoc(post)">Supprimer Post</button>
         <button @click="addComment(post)">Ajouter Commentaire</button>
 
         <div v-if="post.displayComments && post.displayComments.length > 0">
-           <h4>Commentaires:</h4>
-           <ul>
-             <li v-for="comment in post.displayComments" :key="comment._id">
-               {{ comment.text }}
-               <button @click="deleteComment(comment)">Suppr</button>
-             </li>
-           </ul>
+          <h4>Commentaires:</h4>
+          <ul>
+            <li v-for="comment in post.displayComments" :key="comment._id">
+              {{ comment.text }}
+              <button @click="deleteComment(comment)">Suppr</button>
+            </li>
+          </ul>
         </div>
-        <hr>
+
+        <div style="margin: 10px 0">
+          <div v-if="post.imageSrc">
+            <img :src="post.imageSrc" style="max-width: 200px; border-radius: 8px" />
+            <br />
+            <button @click="deleteImage(post)">Supprimer l'image</button>
+          </div>
+
+          <div v-else>
+            <label>Ajouter une photo : </label>
+            <input type="file" @change="(event) => attachImage(event, post)" accept="image/*" />
+          </div>
+        </div>
+        <hr />
       </li>
     </ul>
   </div>
