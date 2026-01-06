@@ -4,6 +4,7 @@ import PouchDB from 'pouchdb'
 import PouchDBFind from 'pouchdb-find'
 PouchDB.plugin(PouchDBFind)
 
+
 declare interface CommentDoc {
   _id?: string
   _rev?: string
@@ -22,13 +23,16 @@ declare interface Post {
   likes: number
   displayComments?: CommentDoc[]
 
-  //pour pouvoir rajouter des medias a nos documents
+  //gerer les medias
   _attachments?: any
   imageSrc?: string
+  
+  //pour afficher ou pas tous les comms
+  showAllComments?: boolean 
 }
 
-const counter = ref(0)
 
+const counter = ref(0)
 const postsDB = ref<PouchDB.Database | undefined>()
 const commentsDB = ref<PouchDB.Database | undefined>()
 
@@ -36,19 +40,19 @@ const postsData = ref<Post[]>([])
 const isOffline = ref(false)
 const searchTerm = ref('')
 
+const paginationOffset = ref(0) 
+
 let postSyncHandler: PouchDB.Replication.Sync<any> | null = null
 let commentSyncHandler: PouchDB.Replication.Sync<any> | null = null
 
 const COUCH_URL_POSTS = 'http://nuno:Nunofaria17@localhost:5984/infradonn2_chat'
 const COUCH_URL_COMMENTS = 'http://nuno:Nunofaria17@localhost:5984/infradonn2_comments'
 
-const increment = () => {
-  counter.value++
-}
+const increment = () => counter.value++
+
 
 const initDatabases = () => {
   console.log('=> Init des 2 Collections')
-
   postsDB.value = new PouchDB('Posts')
   commentsDB.value = new PouchDB('Comments')
 
@@ -59,23 +63,15 @@ const initDatabases = () => {
 
 const startLiveReplication = () => {
   if (postSyncHandler || !postsDB.value || !commentsDB.value) return
-
-  postSyncHandler = postsDB.value
-    .sync(COUCH_URL_POSTS, { live: true, retry: true })
-    .on('change', () => fetchData())
-
-  commentSyncHandler = commentsDB.value
-    .sync(COUCH_URL_COMMENTS, { live: true, retry: true })
-    .on('change', () => fetchData())
+  postSyncHandler = postsDB.value.sync(COUCH_URL_POSTS, { live: true, retry: true }).on('change', () => fetchTop10(false))
+  commentSyncHandler = commentsDB.value.sync(COUCH_URL_COMMENTS, { live: true, retry: true }).on('change', () => fetchTop10(false))
 }
 
 const toggleOfflineMode = () => {
   isOffline.value = !isOffline.value
   if (isOffline.value) {
-    postSyncHandler?.cancel()
-    postSyncHandler = null
-    commentSyncHandler?.cancel()
-    commentSyncHandler = null
+    postSyncHandler?.cancel(); postSyncHandler = null;
+    commentSyncHandler?.cancel(); commentSyncHandler = null;
     console.log('Mode Offline')
   } else {
     startLiveReplication()
@@ -87,25 +83,21 @@ const MAJserveur = async () => {
   try {
     await postsDB.value?.replicate.to(COUCH_URL_POSTS)
     await postsDB.value?.replicate.from(COUCH_URL_POSTS)
-    await commentsDB.value?.replicate.to(COUCH_URL_COMMENTS).catch((e) => console.log('Pas de DB remote comments'))
-    await commentsDB.value?.replicate.from(COUCH_URL_COMMENTS).catch((e) => console.log('Pas de DB remote comments'))
-
-    fetchData()
-  } catch (err) {
-    console.error('Erreur sync manuelle:', err)
-  }
+    await commentsDB.value?.replicate.to(COUCH_URL_COMMENTS).catch(e => console.log('Pas de DB remote comments'))
+    await commentsDB.value?.replicate.from(COUCH_URL_COMMENTS).catch(e => console.log('Pas de DB remote comments'))
+    fetchTop10(false) // Refresh
+  } catch (err) { console.error('Erreur sync:', err) }
 }
 
-//pour mettres les posts et medias ensenble 
 const processPostsForDisplay = async (rawPosts: Post[]) => {
   if (!commentsDB.value || !postsDB.value) return []
 
-  //pour tous les comms
+  //On charge les comms
   const allCommentsRes = await commentsDB.value.allDocs({ include_docs: true })
   const comments = allCommentsRes.rows.map((row: any) => row.doc)
 
   return await Promise.all(rawPosts.map(async (post: Post) => {
-      // Jointure commentaires
+      // Jointure
       const linkedComments = comments.filter((c: CommentDoc) => c.postId === post._id)
       
       let urlImage = ''
@@ -116,115 +108,126 @@ const processPostsForDisplay = async (rawPosts: Post[]) => {
         } catch (e) { console.log('Erreur image', e) }
       }
 
-      return { ...post, displayComments: linkedComments, imageSrc: urlImage }
+      return { 
+          ...post, 
+          displayComments: linkedComments, 
+          imageSrc: urlImage,
+          showAllComments: false 
+      }
   }))
 }
 
-const fetchData = async () => {
+
+/**
+ * MOTIVATION de mon choix par rapport a allDocs :
+ * Au lieu d'utiliser allDocs() qui charge en peu toute la base en mémoire,
+ * je veux utiliser find()
+ */
+const fetchTop10 = async (append = false) => {
   if (!postsDB.value) return
+
+  
+  if (!append) paginationOffset.value = 0
+
   try {
-    const allPosts = await postsDB.value.allDocs({ include_docs: true })
-    const rawPosts = allPosts.rows.map((row: any) => row.doc)
+    const res = await postsDB.value.find({
+        selector: { likes: { $gte: 0 } }, 
+        sort: [{ likes: 'desc' }], 
+        limit: 10,                
+        skip: paginationOffset.value 
+    })
+
+    const processedPosts = await processPostsForDisplay(res.docs as Post[])
+
+    if (append) {
+        postsData.value = [...postsData.value, ...processedPosts]
+    } else {
+        postsData.value = processedPosts
+    }
     
-    postsData.value = await processPostsForDisplay(rawPosts)
-    
-  } catch (err) { console.error('Erreur fetchData:', err) }
+  } catch (err) { 
+      console.error('Erreur fetchTop10 (Index manquant ?):', err) 
+  }
 }
+
+const loadNextPage = () => {
+    paginationOffset.value += 10 
+    fetchTop10(true) 
+}
+
+
 
 const createDoc = (newDoc: any) => {
   newDoc.likes = 0
-  postsDB.value?.post(newDoc).then(() => fetchData())
+  postsDB.value?.post(newDoc).then(() => fetchTop10(false))
 }
-
 const deleteDoc = (doc: Post) => {
-  postsDB.value?.remove(doc._id!, doc._rev!).then(() => fetchData())
+  postsDB.value?.remove(doc._id!, doc._rev!).then(() => fetchTop10(false))
 }
-
 const updateDoc = (doc: Post) => {
-  const { displayComments, imageSrc, ...docToSave } = doc
+  const { displayComments, imageSrc, showAllComments, ...docToSave } = doc
   const docUpdated = { ...docToSave, ville: 'Update ' + new Date().toISOString() }
-  postsDB.value?.put(docUpdated).then(() => fetchData())
+  postsDB.value?.put(docUpdated).then(() => fetchTop10(false))
 }
-
 const toggleLike = (post: Post) => {
-  const { displayComments, imageSrc, ...docToSave } = post
+  const { displayComments, imageSrc, showAllComments, ...docToSave } = post
   const updated = { ...docToSave, likes: (docToSave.likes || 0) + 1 }
-  postsDB.value?.put(updated).then(() => fetchData())
+  postsDB.value?.put(updated).then(() => fetchTop10(false))
 }
 
+//add un comment a un post
 const addComment = (post: Post) => {
   const txt = prompt('Commentaire :')
   if (!txt || !commentsDB.value) return
+  const newComment: CommentDoc = { postId: post._id!, text: txt, date: new Date().toISOString() }
+  commentsDB.value.post(newComment).then(() => fetchTop10(false))
+}
 
-  const newComment: CommentDoc = {
-    postId: post._id!,
-    text: txt,
-    date: new Date().toISOString(),
-  }
-
-  commentsDB.value.post(newComment).then(() => fetchData())
+const editComment = (comment: CommentDoc) => {
+  if (!commentsDB.value || !comment._id || !comment._rev) return
+  const newText = prompt('Modifier le commentaire :', comment.text)
+  if (newText === null || newText.trim() === '') return
+  const updatedComment = { ...comment, text: newText }
+  commentsDB.value.put(updatedComment).then(() => fetchTop10(false))
 }
 
 const deleteComment = (comment: CommentDoc) => {
   if (!commentsDB.value || !comment._id || !comment._rev) return
-  commentsDB.value.remove(comment._id, comment._rev).then(() => fetchData())
+  commentsDB.value.remove(comment._id, comment._rev).then(() => fetchTop10(false))
 }
 
-//gestion des medias
+//partie des medias
 const attachImage = async (event: any, post: Post) => {
   const file = event.target.files[0]
   if (!file || !postsDB.value || !post._id || !post._rev) return
-
   try {
     await postsDB.value.putAttachment(post._id, 'image', post._rev, file, file.type)
-    fetchData()
-  } catch (err) {
-    console.error('Erreur upload image:', err)
-  }
+    fetchTop10(false)
+  } catch (err) { console.error('Erreur upload:', err) }
 }
 
 const deleteImage = async (post: Post) => {
   if (!postsDB.value || !post._id || !post._rev) return
   try {
     await postsDB.value.removeAttachment(post._id, 'image', post._rev)
-    fetchData()
-  } catch (err) {
-    console.error('Erreur suppression image:', err)
-  }
+    fetchTop10(false)
+  } catch (err) { console.error('Erreur suppr image:', err) }
 }
 
-
+//indexation pour faire la recherche
 const createIndex = () => {
   if (!postsDB.value) return
   postsDB.value.createIndex({ index: { fields: ['likes'] } })
     .then(() => postsDB.value?.createIndex({ index: { fields: ['nom'] } }))
-    .then(() => console.log("Index créés avec succès"))
-    .catch(err => console.error(" Erreur création index", err))
-}
-
-const sortByLikes = () => {
-  console.log("Tri en cours...")
-  postsDB.value?.find({
-      selector: { likes: { $gte: 0 } },
-      sort: [{ likes: 'desc' }],
-    })
-    .then(async (res: any) => { 
-      console.log("Tri réussi !", res.docs.length)
-      postsData.value = await processPostsForDisplay(res.docs) 
-    })
-    .catch(err => {
-        console.error("Erreur de tri :", err)
-        alert("Le tri a échoué. Vérifiez la console (F12). L'index est peut-être manquant.")
-    })
+    .then(() => console.log('✅ Index créés (Tri et Recherche optimisés)'))
+    .catch(err => console.error('Erreur Index', err))
 }
 
 const searchByName = () => {
-  if (!searchTerm.value) { fetchData(); return }
+  if (!searchTerm.value) { fetchTop10(false); return }
   
   const regex = new RegExp(`^${searchTerm.value}`, 'i')
-  postsDB.value?.find({
-      selector: { nom: { $regex: regex } },
-    })
+  postsDB.value?.find({ selector: { nom: { $regex: regex } } })
     .then(async (res: any) => { 
        postsData.value = await processPostsForDisplay(res.docs)
     })
@@ -232,57 +235,49 @@ const searchByName = () => {
 
 const createFactoryDocs = async () => {
   if (!postsDB.value || !commentsDB.value) return
-
   const postsToAdd: any[] = []
   const commentsToAdd: any[] = []
   const sports = ['Football', 'Tennis', 'Rugby']
 
-  for (let i = 0; i < 10; i++) {
-    const postId = 'post_factory_' + Date.now() + '_' + i
-    const docPost = {
+  
+  for (let i = 0; i < 25; i++) {
+    const postId = 'post_fact_' + Date.now() + '_' + i
+    postsToAdd.push({
       _id: postId,
       nom: `User ${i + 1}`,
       age: 20 + i,
       ville: `Ville ${i}`,
       sport: sports[i % 3],
-      likes: Math.floor(Math.random() * 50),
-    }
-    postsToAdd.push(docPost)
+      likes: Math.floor(Math.random() * 200), 
+    })
 
-    const docCom = {
-      postId: postId,
-      text: `Super commentaire pour le post ${i}`,
-      date: new Date().toISOString(),
-    }
-    commentsToAdd.push(docCom)
+    commentsToAdd.push({ postId: postId, text: `Com 1 (Vieux) - Post ${i}`, date: '2023-01-01' })
+    commentsToAdd.push({ postId: postId, text: `Com 2 (Moyen) - Post ${i}`, date: '2023-01-02' })
+    commentsToAdd.push({ postId: postId, text: `Com 3 (Dernier) - Post ${i}`, date: '2023-01-03' })
   }
-
   await postsDB.value.bulkDocs(postsToAdd)
   await commentsDB.value.bulkDocs(commentsToAdd)
-
   console.log('Factory OK')
-  fetchData()
+  fetchTop10(false)
 }
 
 onMounted(() => {
   initDatabases()
   createIndex()
-  fetchData()
+  fetchTop10(false) //du coup recharger que le top10 au demarage
 })
 </script>
 
 <template>
-  <h1>Tp InfraDon - Posts et Comms</h1>
+  <h1>Tp InfraDon - WhatsApp</h1>
   <p>Compteur: {{ counter }} <button @click="increment">+1</button></p>
 
   <hr />
 
   <div>
     <h2>Connexion</h2>
-    <p>
-      Etat: <strong>{{ isOffline ? 'HORS LIGNE' : 'EN LIGNE' }}</strong>
-    </p>
-    <button @click="toggleOfflineMode">Changer <=> Online Offline</button>
+    <p>Etat: <strong>{{ isOffline ? 'HORS LIGNE' : 'EN LIGNE' }}</strong></p>
+    <button @click="toggleOfflineMode">Online / Offline</button>
     <button @click="MAJserveur">Sync Manuelle</button>
   </div>
 
@@ -290,53 +285,72 @@ onMounted(() => {
 
   <div>
     <h2>Outils</h2>
-    <button @click="createFactoryDocs">Factory (Avec implémentation 2 collections)</button>
-    <button @click="sortByLikes">Trier par Likes (DB)</button>
+    <button @click="createFactoryDocs">Factory (25 Docs)</button>
     <br />
-    <input v-model="searchTerm" placeholder="Nom..." />
+    <input v-model="searchTerm" placeholder="Nom..." >
     <button @click="searchByName">Rechercher</button>
-    <button @click="fetchData">Reset Liste</button>
+    <button @click="fetchTop10(false)">Reset / Top 10</button>
   </div>
 
   <hr />
 
   <div>
-    <h2>Liste des Posts</h2>
+    <h2>Top Posts (Triés par Likes)</h2>
     <ul>
       <li v-for="post in postsData" :key="post._id">
         <h3>{{ post.nom }} ({{ post.likes }} likes)</h3>
         <p>{{ post.ville }} - {{ post.sport }}</p>
 
-        <button @click="toggleLike(post)">Liker</button>
-        <button @click="updateDoc(post)">Modifier Post</button>
-        <button @click="deleteDoc(post)">Supprimer Post</button>
-        <button @click="addComment(post)">Ajouter Commentaire</button>
-
-        <div v-if="post.displayComments && post.displayComments.length > 0">
-          <h4>Commentaires:</h4>
-          <ul>
-            <li v-for="comment in post.displayComments" :key="comment._id">
-              {{ comment.text }}
-              <button @click="deleteComment(comment)">Suppr</button>
-            </li>
-          </ul>
-        </div>
-
         <div style="margin: 10px 0">
           <div v-if="post.imageSrc">
             <img :src="post.imageSrc" style="max-width: 200px; border-radius: 8px" />
             <br />
-            <button @click="deleteImage(post)">Supprimer l'image</button>
+            <button @click="deleteImage(post)">Supprimer Image</button>
           </div>
-
           <div v-else>
-            <label>Ajouter une photo : </label>
+            <label>Photo : </label>
             <input type="file" @change="(event) => attachImage(event, post)" accept="image/*" />
           </div>
+        </div>
+
+        <button @click="toggleLike(post)">Like</button>
+        <button @click="updateDoc(post)">Edit</button>
+        <button @click="deleteDoc(post)">Suppr</button>
+        <button @click="addComment(post)">Commenter</button>
+
+        <div v-if="post.displayComments && post.displayComments.length > 0" style="background: #f4f4f4; padding: 10px; margin-top: 10px;">
+          
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+             <h4>Commentaires :</h4>
+             <button v-if="post.displayComments.length > 1" @click="post.showAllComments = !post.showAllComments">
+                {{ post.showAllComments ? 'Masquer' : `Voir les ${post.displayComments.length} commentaires` }}
+             </button>
+          </div>
+
+          <ul>
+            <li v-for="comment in (post.showAllComments ? post.displayComments : post.displayComments.slice(-1))" :key="comment._id">
+              
+              <strong>{{ comment.text }}</strong> <small>({{ comment.date }})</small>
+              
+              <span v-if="!post.showAllComments && post.displayComments.length > 1" style="color: grey; font-size: 0.8em;"> (Dernier commentaire)</span>
+
+              <div style="margin-top: 5px;">
+                 <button @click="editComment(comment)">Modifier</button>
+                 <button @click="deleteComment(comment)">Suppr</button>
+              </div>
+            </li>
+          </ul>
         </div>
         <hr />
       </li>
     </ul>
+
+    <div v-if="postsData.length > 0" style="text-align: center; margin: 20px;">
+        <button @click="loadNextPage" style="padding: 10px 20px; font-size: 1.1em; cursor: pointer;">
+             Charger les 10 suivants 
+        </button>
+    </div>
+
   </div>
 
   <button @click="createDoc({ nom: 'Nuno', age: 22, ville: 'Lausanne', sport: 'foot' })">
