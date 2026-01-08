@@ -61,12 +61,14 @@ const initDatabases = () => {
   }
 }
 
+
 const startLiveReplication = () => {
   if (postSyncHandler || !postsDB.value || !commentsDB.value) return
   postSyncHandler = postsDB.value.sync(COUCH_URL_POSTS, { live: true, retry: true }).on('change', () => fetchTop10(false))
   commentSyncHandler = commentsDB.value.sync(COUCH_URL_COMMENTS, { live: true, retry: true }).on('change', () => fetchTop10(false))
 }
 
+//pour pouvoir choisir si on est en mode online ou offline
 const toggleOfflineMode = () => {
   isOffline.value = !isOffline.value
   if (isOffline.value) {
@@ -78,14 +80,14 @@ const toggleOfflineMode = () => {
     console.log('Mode Online')
   }
 }
-
+//pour mettre a jour le serveur
 const MAJserveur = async () => {
   try {
     await postsDB.value?.replicate.to(COUCH_URL_POSTS)
     await postsDB.value?.replicate.from(COUCH_URL_POSTS)
     await commentsDB.value?.replicate.to(COUCH_URL_COMMENTS).catch(e => console.log('Pas de DB remote comments'))
     await commentsDB.value?.replicate.from(COUCH_URL_COMMENTS).catch(e => console.log('Pas de DB remote comments'))
-    fetchTop10(false) // Refresh
+    fetchTop10(false) //refresh
   } catch (err) { console.error('Erreur sync:', err) }
 }
 
@@ -170,9 +172,9 @@ const updateDoc = (doc: Post) => {
   postsDB.value?.put(docUpdated).then(() => fetchTop10(false))
 }
 const toggleLike = (post: Post) => {
-  const { displayComments, imageSrc, showAllComments, ...docToSave } = post
-  const updated = { ...docToSave, likes: (docToSave.likes || 0) + 1 }
-  postsDB.value?.put(updated).then(() => fetchTop10(false))
+  const { displayComments, imageSrc, showAllComments, ...docToSave } = post //mettoyer
+  const updated = { ...docToSave, likes: (docToSave.likes || 0) + 1 } //maj
+  postsDB.value?.put(updated).then(() => fetchTop10(false)) //save et refresh avec likes etout
 }
 
 //add un comment a un post
@@ -183,6 +185,8 @@ const addComment = (post: Post) => {
   commentsDB.value.post(newComment).then(() => fetchTop10(false))
 }
 
+
+//ajout du retour, genre pouvoir modifier un commentaire.
 const editComment = (comment: CommentDoc) => {
   if (!commentsDB.value || !comment._id || !comment._rev) return
   const newText = prompt('Modifier le commentaire :', comment.text)
@@ -191,12 +195,14 @@ const editComment = (comment: CommentDoc) => {
   commentsDB.value.put(updatedComment).then(() => fetchTop10(false))
 }
 
+//supprumer un commentaire
 const deleteComment = (comment: CommentDoc) => {
   if (!commentsDB.value || !comment._id || !comment._rev) return
   commentsDB.value.remove(comment._id, comment._rev).then(() => fetchTop10(false))
 }
 
-//partie des medias
+//partie des medias , pouvoir selectionner une image de notre machine 
+//je ne sais pas s il faut mettre a partir de notre machine ou si on doit / peut mettre par "coller l'URL" de l image
 const attachImage = async (event: any, post: Post) => {
   const file = event.target.files[0]
   if (!file || !postsDB.value || !post._id || !post._rev) return
@@ -206,6 +212,7 @@ const attachImage = async (event: any, post: Post) => {
   } catch (err) { console.error('Erreur upload:', err) }
 }
 
+//pour pouvoir enlever l image (media) qu on a pris
 const deleteImage = async (post: Post) => {
   if (!postsDB.value || !post._id || !post._rev) return
   try {
@@ -219,10 +226,11 @@ const createIndex = () => {
   if (!postsDB.value) return
   postsDB.value.createIndex({ index: { fields: ['likes'] } })
     .then(() => postsDB.value?.createIndex({ index: { fields: ['nom'] } }))
-    .then(() => console.log('✅ Index créés (Tri et Recherche optimisés)'))
+    .then(() => console.log(' Index créés'))
     .catch(err => console.error('Erreur Index', err))
 }
 
+//faire la recherche d'un post avec la barre de recherche
 const searchByName = () => {
   if (!searchTerm.value) { fetchTop10(false); return }
   
@@ -269,7 +277,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <h1>Tp InfraDon - WhatsApp</h1>
+  <h1>InfraDon2 - TP App Posts</h1>
   <p>Compteur: {{ counter }} <button @click="increment">+1</button></p>
 
   <hr />
@@ -297,8 +305,8 @@ onMounted(() => {
   <div>
     <h2>Top Posts (Triés par Likes)</h2>
     <ul>
-      <li v-for="post in postsData" :key="post._id">
-        <h3>{{ post.nom }} ({{ post.likes }} likes)</h3>
+      <li v-for="post in postsData" :key="post._id" style="margin-bottom: 30px;">
+        <h3>{{ post.nom }} ({{ post.likes }} Likes )</h3>
         <p>{{ post.ville }} - {{ post.sport }}</p>
 
         <div style="margin: 10px 0">
@@ -313,26 +321,35 @@ onMounted(() => {
           </div>
         </div>
 
-        <button @click="toggleLike(post)">Like</button>
-        <button @click="updateDoc(post)">Edit</button>
-        <button @click="deleteDoc(post)">Suppr</button>
-        <button @click="addComment(post)">Commenter</button>
+        <div style="margin-bottom: 10px;">
+            <button @click="toggleLike(post)">Like</button>
+            <button @click="updateDoc(post)">Edit</button>
+            <button @click="deleteDoc(post)">Suppr</button>
+            <button @click="addComment(post)">Commenter</button>
+        </div>
 
-        <div v-if="post.displayComments && post.displayComments.length > 0" style="background: #f4f4f4; padding: 10px; margin-top: 10px;">
+        <div v-if="post.displayComments && post.displayComments.length > 0" 
+             style="background: #333; color: white; padding: 15px; margin-top: 10px; border-radius: 8px;">
           
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-             <h4>Commentaires :</h4>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+             <h4 style="margin: 0;">Commentaires :</h4>
              <button v-if="post.displayComments.length > 1" @click="post.showAllComments = !post.showAllComments">
                 {{ post.showAllComments ? 'Masquer' : `Voir les ${post.displayComments.length} commentaires` }}
              </button>
           </div>
 
-          <ul>
-            <li v-for="comment in (post.showAllComments ? post.displayComments : post.displayComments.slice(-1))" :key="comment._id">
+          <ul style="list-style: none; padding: 0;">
+            <li v-for="comment in (post.showAllComments ? post.displayComments : post.displayComments.slice(-1))" 
+                :key="comment._id" 
+                style="padding: 8px 0; border-bottom: 1px solid #555;">
               
-              <strong>{{ comment.text }}</strong> <small>({{ comment.date }})</small>
+              <div style="font-size: 1.1em;">{{ comment.text }}</div>
+              <small style="color: #aaa;">{{ comment.date }}</small>
               
-              <span v-if="!post.showAllComments && post.displayComments.length > 1" style="color: grey; font-size: 0.8em;"> (Dernier commentaire)</span>
+              <span v-if="!post.showAllComments && post.displayComments.length > 1" 
+                    style="color: #42b983; font-weight: bold; font-size: 0.8em; margin-left: 10px;"> 
+                    (Dernier commentaire)
+              </span>
 
               <div style="margin-top: 5px;">
                  <button @click="editComment(comment)">Modifier</button>
@@ -341,11 +358,11 @@ onMounted(() => {
             </li>
           </ul>
         </div>
-        <hr />
+        <hr style="margin-top: 20px; border-color: #555;" />
       </li>
     </ul>
 
-    <div v-if="postsData.length > 0" style="text-align: center; margin: 20px;">
+    <div v-if="postsData.length > 0" style="text-align: center; margin: 40px;">
         <button @click="loadNextPage" style="padding: 10px 20px; font-size: 1.1em; cursor: pointer;">
              Charger les 10 suivants 
         </button>
